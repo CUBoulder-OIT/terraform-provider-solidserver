@@ -781,8 +781,7 @@ func ipaliasidbyinfo(addressID string, aliasName string, ipNameType string, meta
 	// Building parameters
 	parameters := url.Values{}
 	parameters.Add("ip_id", addressID)
-	// Bug - Ticket 18653
-	// parameters.Add("WHERE", "ip_name_type='" + ipNameType + "' AND " + "alias_name='" + alias_name + "'")
+	parameters.Add("WHERE", "ip_name_type='"+ipNameType+"' AND "+"alias_name='"+aliasName+"'")
 
 	// Sending the read request
 	resp, body, err := s.Request("get", "rest/ip_alias_list", &parameters)
@@ -791,33 +790,13 @@ func ipaliasidbyinfo(addressID string, aliasName string, ipNameType string, meta
 		var buf [](map[string]interface{})
 		json.Unmarshal([]byte(body), &buf)
 
-		// Shall be removed once Ticket 18653 is closed
 		// Checking the answer
 		if resp.StatusCode == 200 && len(buf) > 0 {
-			for i := 0; i < len(buf); i++ {
-				r_ip_name_id, r_ip_name_id_exist := buf[i]["ip_name_id"].(string)
-				r_ip_name_type, r_ip_name_type_exist := buf[i]["ip_name_type"].(string)
-				r_alias_name, r_alias_name_exist := buf[i]["alias_name"].(string)
-
-				log.Printf("[DEBUG] SOLIDServer - Comparing '%s' with '%s' looking for IP alias associated with IP address ID %s\n", aliasName, r_alias_name, addressID)
-				log.Printf("[DEBUG] SOLIDServer - Comparing '%s' with '%s' looking for IP alias associated with IP address ID %s\n", ipNameType, r_ip_name_type, addressID)
-
-				if r_ip_name_type_exist && strings.Compare(ipNameType, r_ip_name_type) == 0 &&
-					r_alias_name_exist && strings.Compare(aliasName, r_alias_name) == 0 &&
-					r_ip_name_id_exist {
-					return r_ip_name_id, nil
-				}
+			if ip_name_id, ip_name_id_exist := buf[0]["ip_name_id"].(string); ip_name_id_exist {
+				return ip_name_id, nil
 			}
 		}
 	}
-
-	// Shall be restored once Ticket 18653 is closed
-	// Checking the answer
-	//if (resp.StatusCode == 200 && len(buf) > 0) {
-	//  if ip_name_id, ip_name_id_exist := buf[0]["ip_name_id"].(string); (ip_name_id_exist) {
-	//    return ip_name_id
-	//  }
-	//}
 
 	log.Printf("[DEBUG] SOLIDServer - Unable to find IP alias: %s - %s associated with IP address ID %s\n", aliasName, ipNameType, addressID)
 
@@ -981,6 +960,242 @@ func dnssmartmembersupdate(smartName string, smartMembersRole string, meta inter
 	}
 
 	return false
+}
+
+// Get DNS Server status
+// Return an empty string in case of failure the server status otherwise (Y -> OK)
+func dnsserverstatus(serverID string, meta interface{}) string {
+	s := meta.(*SOLIDserver)
+
+	// Building parameters for retrieving information
+	parameters := url.Values{}
+	parameters.Add("dns_id", serverID)
+
+	// Sending the get request
+	resp, body, err := s.Request("get", "rest/dns_server_info", &parameters)
+
+	if err == nil {
+		var buf [](map[string]interface{})
+		json.Unmarshal([]byte(body), &buf)
+
+		// Checking the answer
+		if resp.StatusCode == 200 && len(buf) > 0 {
+			if state, stateExist := buf[0]["dns_state"].(string); stateExist {
+				return state
+			}
+			return ""
+		}
+
+		// Log the error
+		if len(buf) > 0 {
+			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
+				log.Printf("[DEBUG] SOLIDServer - Unable to retrieve DNS server status: %s (%s)\n", serverID, errMsg)
+			}
+		} else {
+			log.Printf("[DEBUG] SOLIDServer - Unable to retrieve DNS server status: %s\n", serverID)
+		}
+	}
+
+	return ""
+}
+
+// Get number of pending deletion operations on DNS server
+// Return -1 in case of failure
+func dnsserverpendingdeletions(serverID string, meta interface{}) int {
+	s := meta.(*SOLIDserver)
+	result := 0
+
+	// Building parameters for retrieving information
+	parameters := url.Values{}
+	parameters.Add("WHERE", "delayed_delete_time='1'")
+
+	// Sending the get request
+	resp, body, err := s.Request("get", "rest/dns_zone_count", &parameters)
+
+	if err == nil {
+		var buf [](map[string]interface{})
+		json.Unmarshal([]byte(body), &buf)
+
+		// Checking the answer
+		if resp.StatusCode == 200 && len(buf) > 0 {
+			if total, totalExist := buf[0]["total"].(string); totalExist {
+				inc, _ := strconv.Atoi(total)
+				result += inc
+			} else {
+				return -1
+			}
+		}
+		// Log the error
+		if len(buf) > 0 {
+			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
+				log.Printf("[DEBUG] SOLIDServer - Unable to retrieve DNS server pending operations: %s (%s)\n", serverID, errMsg)
+			}
+		} else {
+			log.Printf("[DEBUG] SOLIDServer - Unable to retrieve DNS server pending operations: %s\n", serverID)
+		}
+	}
+
+	// Building parameters for retrieving information
+	parameters = url.Values{}
+	parameters.Add("WHERE", "delayed_delete_time='1'")
+
+	// Sending the get request
+	resp, body, err = s.Request("get", "rest/dns_view_count", &parameters)
+
+	if err == nil {
+		var buf [](map[string]interface{})
+		json.Unmarshal([]byte(body), &buf)
+
+		// Checking the answer
+		if resp.StatusCode == 200 && len(buf) > 0 {
+			if total, totalExist := buf[0]["total"].(string); totalExist {
+				inc, _ := strconv.Atoi(total)
+				result += inc
+			} else {
+				return -1
+			}
+		}
+		// Log the error
+		if len(buf) > 0 {
+			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
+				log.Printf("[DEBUG] SOLIDServer - Unable to retrieve DNS server pending operations: %s (%s)\n", serverID, errMsg)
+			}
+		} else {
+			log.Printf("[DEBUG] SOLIDServer - Unable to retrieve DNS server pending operations: %s\n", serverID)
+		}
+	}
+
+	return result
+}
+
+// Set a DNSserver or DNSview param value
+// Return false in case of failure
+func dnsparamset(serverName string, viewID string, paramKey string, paramValue string, meta interface{}) bool {
+	s := meta.(*SOLIDserver)
+
+	service := "dns_server_param_add"
+
+	// Building parameters to push information
+	parameters := url.Values{}
+
+	if viewID != "" {
+		service = "dns_view_param_add"
+		parameters.Add("dnsview_id", viewID)
+	} else {
+		parameters.Add("dns_name", serverName)
+	}
+
+	parameters.Add("param_key", paramKey)
+	parameters.Add("param_value", paramValue)
+
+	// Sending the update request
+	resp, body, err := s.Request("put", "rest/"+service, &parameters)
+
+	if err == nil {
+		var buf [](map[string]interface{})
+		json.Unmarshal([]byte(body), &buf)
+
+		// Checking the answer
+		if resp.StatusCode == 200 && len(buf) > 0 {
+			return true
+		}
+
+		// Log the error
+		if len(buf) > 0 {
+			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
+				log.Printf("[DEBUG] SOLIDServer - Unable to set DNS server or view parameter: %s on %s (%s)\n", paramKey, serverName, errMsg)
+			}
+		} else {
+			log.Printf("[DEBUG] SOLIDServer - Unable to set DNS server or view parameter: %s on %s\n", paramKey, serverName)
+		}
+	}
+
+	return false
+}
+
+// UnSet a DNSserver or DNSview param value
+// Return false in case of failure
+func dnsparamunset(serverName string, viewID string, paramKey string, meta interface{}) bool {
+	s := meta.(*SOLIDserver)
+
+	service := "dns_server_param_delete"
+
+	// Building parameters to push information
+	parameters := url.Values{}
+
+	if viewID != "" {
+		service = "dns_view_param_delete"
+		parameters.Add("dnsview_id", viewID)
+	} else {
+		parameters.Add("dns_name", serverName)
+	}
+
+	parameters.Add("param_key", paramKey)
+
+	// Sending the delete request
+	resp, body, err := s.Request("delete", "rest/"+service, &parameters)
+
+	if err == nil {
+		var buf [](map[string]interface{})
+		json.Unmarshal([]byte(body), &buf)
+
+		// Checking the answer
+		if resp.StatusCode == 200 && len(buf) > 0 {
+			return true
+		}
+
+		// Log the error
+		if len(buf) > 0 {
+			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
+				log.Printf("[DEBUG] SOLIDServer - Unable to unset DNS server or view parameter: %s on %s (%s)\n", paramKey, serverName, errMsg)
+			}
+		} else {
+			log.Printf("[DEBUG] SOLIDServer - Unable to unset DNS server or view parameter: %s on %s\n", paramKey, serverName)
+		}
+	}
+
+	return false
+}
+
+// Get a DNSserver or DNSview param's value
+// Return an empty string and an error in case of failure
+func dnsparamget(serverName string, viewID string, paramKey string, meta interface{}) (string, error) {
+	s := meta.(*SOLIDserver)
+
+	service := "dns_server_param_list"
+	if viewID != "" {
+		service = "dns_view_param_list"
+	}
+
+	// Building parameters for retrieving information
+	parameters := url.Values{}
+
+	if viewID == "" {
+		parameters.Add("WHERE", "dns_name='"+serverName+"' AND param_key='"+paramKey+"'")
+	} else {
+		parameters.Add("WHERE", "dns_name='"+serverName+"' AND dnsview_id='"+viewID+"' AND param_key='"+paramKey+"'")
+	}
+
+	// Sending the read request
+	resp, body, err := s.Request("get", "rest/"+service, &parameters)
+
+	if err == nil {
+		var buf [](map[string]interface{})
+		json.Unmarshal([]byte(body), &buf)
+
+		// Checking the answer
+		if resp.StatusCode == 200 && len(buf) > 0 {
+			if paramValue, paramValueExist := buf[0]["param_value"].(string); paramValueExist {
+				return paramValue, nil
+			} else {
+				return "", nil
+			}
+		}
+	}
+
+	log.Printf("[DEBUG] SOLIDServer - Unable to find DNS Param Key: %s\n", paramKey)
+
+	return "", err
 }
 
 // Add a DNS server to a SMART with the required role, return the

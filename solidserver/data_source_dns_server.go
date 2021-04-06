@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/terraform/helper/schema"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -52,6 +53,30 @@ func dataSourcednsserver() *schema.Resource {
 			"forwarders": {
 				Type:        schema.TypeList,
 				Description: "The IP address list of the forwarder(s) configured on the DNS server.",
+				Computed:    true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"allow_transfer": {
+				Type:        schema.TypeList,
+				Description: "A list of network prefixes allowed to query the DNS server for zone transfert (named ACL(s) are not supported using this provider).",
+				Computed:    true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"allow_query": {
+				Type:        schema.TypeList,
+				Description: "A list of network prefixes allowed to query the DNS server (named ACL(s) are not supported using this provider).",
+				Computed:    true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"allow_recursion": {
+				Type:        schema.TypeList,
+				Description: "A list of network prefixes allowed to query the DNS server for recursion (named ACL(s) are not supported using this provider).",
 				Computed:    true,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
@@ -115,17 +140,48 @@ func dataSourcednsserverRead(d *schema.ResourceData, meta interface{}) error {
 				d.Set("forwarders", toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_forwarders"].(string), ";"), ";")))
 			}
 
-			// Updating local class_parameters
-			currentClassParameters := d.Get("class_parameters").(map[string]interface{})
+			// Only look for network prefixes, acl(s) names will be ignored during the sync process with SOLIDserver
+			// Building allow_transfer ACL
+			if buf[0]["dns_allow_transfer"].(string) != "" {
+				allowTransfers := []string{}
+				for _, allowTransfer := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_transfer"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowTransfer.(string)); match == true {
+						allowTransfers = append(allowTransfers, allowTransfer.(string))
+					}
+				}
+				d.Set("allow_transfer", allowTransfers)
+			}
+
+			// Building allow_query ACL
+			if buf[0]["dns_allow_query"].(string) != "" {
+				allowQueries := []string{}
+				for _, allowQuery := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_query"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowQuery.(string)); match == true {
+						allowQueries = append(allowQueries, allowQuery.(string))
+					}
+				}
+				d.Set("allow_query", allowQueries)
+			}
+
+			// Building allow_recursion ACL
+			if buf[0]["dns_allow_recursion"].(string) != "" {
+				allowRecursions := []string{}
+				for _, allowRecursion := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_recursion"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowRecursion.(string)); match == true {
+						allowRecursions = append(allowRecursions, allowRecursion.(string))
+					}
+				}
+				d.Set("allow_recursion", allowRecursions)
+			}
+
+			d.Set("class", buf[0]["dns_class_name"].(string))
+
+			// Setting local class_parameters
 			retrievedClassParameters, _ := url.ParseQuery(buf[0]["dns_class_parameters"].(string))
 			computedClassParameters := map[string]string{}
 
-			for ck := range currentClassParameters {
-				if rv, rvExist := retrievedClassParameters[ck]; rvExist {
-					computedClassParameters[ck] = rv[0]
-				} else {
-					computedClassParameters[ck] = ""
-				}
+			for ck := range retrievedClassParameters {
+				computedClassParameters[ck] = retrievedClassParameters[ck][0]
 			}
 
 			d.Set("class_parameters", computedClassParameters)

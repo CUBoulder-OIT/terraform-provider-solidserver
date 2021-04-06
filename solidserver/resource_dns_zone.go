@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/hashicorp/terraform/helper/validation"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -23,20 +25,20 @@ func resourcednszone() *schema.Resource {
 		Schema: map[string]*schema.Schema{
 			"dnsserver": {
 				Type:        schema.TypeString,
-				Description: "The managed SMART DNS server name, or DNS server name hosting the zone.",
+				Description: "The name of DNS server or DNS SMART hosting the DNS zone to create.",
 				Required:    true,
 				ForceNew:    true,
 			},
-			"view": {
+			"dnsview": {
 				Type:        schema.TypeString,
-				Description: "The DNS view name hosting the zone.",
+				Description: "The name of DNS view hosting the DNS zone to create.",
 				Optional:    true,
 				ForceNew:    true,
 				Default:     "#",
 			},
 			"name": {
 				Type:        schema.TypeString,
-				Description: "The Domain Name served by the zone.",
+				Description: "The Domain Name to be hosted by the zone.",
 				Required:    true,
 				ForceNew:    true,
 			},
@@ -62,6 +64,23 @@ func resourcednszone() *schema.Resource {
 				ForceNew:    false,
 				Default:     false,
 			},
+			"notify": {
+				Type:         schema.TypeString,
+				Description:  "The expected notify behavior (Supported: empty (Inherited), Yes, No, Explicit; Default: empty (Inherited).",
+				Optional:     true,
+				ForceNew:     false,
+				Default:      "",
+				ValidateFunc: validation.StringInSlice([]string{"", "yes", "no", "explicit"}, false),
+			},
+			"also_notify": {
+				Type:        schema.TypeList,
+				Description: "The list of IP addresses (Format <IP>:<Port>) that will receive zone change notifications in addition to the NS listed in the SOA",
+				Optional:    true,
+				ForceNew:    false,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
 			"class": {
 				Type:        schema.TypeString,
 				Description: "The class associated to the zone.",
@@ -74,7 +93,9 @@ func resourcednszone() *schema.Resource {
 				Description: "The class parameters associated to the zone.",
 				Optional:    true,
 				ForceNew:    false,
-				Default:     map[string]string{},
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 		},
 	}
@@ -140,12 +161,33 @@ func resourcednszoneCreate(d *schema.ResourceData, meta interface{}) error {
 	parameters := url.Values{}
 	parameters.Add("add_flag", "new_only")
 	parameters.Add("dns_name", d.Get("dnsserver").(string))
-	if strings.Compare(d.Get("view").(string), "#") != 0 {
-		parameters.Add("dnsview_name", d.Get("view").(string))
+	if strings.Compare(d.Get("dnsview").(string), "#") != 0 {
+		parameters.Add("dnsview_name", strings.ToLower(d.Get("dnsview").(string)))
 	}
 	parameters.Add("dnszone_name", d.Get("name").(string))
 	parameters.Add("dnszone_type", strings.ToLower(d.Get("type").(string)))
 	parameters.Add("dnszone_site_id", siteID)
+
+	// Building Notify and Also Notify Statements
+	parameters.Add("dnszone_notify", strings.ToLower(d.Get("notify").(string)))
+
+	alsoNotifies := ""
+	for _, alsoNotify := range toStringArray(d.Get("also_notify").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpIPPort, alsoNotify); match == false {
+			return fmt.Errorf("SOLIDServer - Only IP:Port format is supported")
+		}
+		alsoNotifies += strings.Replace(alsoNotify, ":", " port ", 1) + ";"
+	}
+
+	if d.Get("notify").(string) == "" || strings.ToLower(d.Get("notify").(string)) == "no" {
+		if alsoNotifies != "" {
+			return fmt.Errorf("SOLIDServer - Error creating DNS zone: %s (Notify set to 'Inherited' or 'No' but also_notify list is not empty).", strings.ToLower(d.Get("name").(string)))
+		}
+		parameters.Add("dnszone_also_notify", alsoNotifies)
+	} else {
+		parameters.Add("dnszone_also_notify", alsoNotifies)
+	}
+
 	parameters.Add("dnszone_class_name", d.Get("class").(string))
 
 	// Building class_parameters
@@ -177,6 +219,9 @@ func resourcednszoneCreate(d *schema.ResourceData, meta interface{}) error {
 		// Reporting a failure
 		if len(buf) > 0 {
 			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
+				if errParam, errParamExist := buf[0]["parameters"].(string); errParamExist {
+					return fmt.Errorf("SOLIDServer - Unable to create DNS zone: %s (%s - %s)", d.Get("name").(string), errMsg, errParam)
+				}
 				return fmt.Errorf("SOLIDServer - Unable to create DNS zone: %s (%s)", d.Get("name").(string), errMsg)
 			}
 		}
@@ -202,7 +247,31 @@ func resourcednszoneUpdate(d *schema.ResourceData, meta interface{}) error {
 	parameters := url.Values{}
 	parameters.Add("dnszone_id", d.Id())
 	parameters.Add("add_flag", "edit_only")
+	if strings.Compare(d.Get("dnsview").(string), "#") != 0 {
+		parameters.Add("dnsview_name", strings.ToLower(d.Get("dnsview").(string)))
+	}
 	parameters.Add("dnszone_site_id", siteID)
+
+	// Building Notify and Also Notify Statements
+	parameters.Add("dnszone_notify", strings.ToLower(d.Get("notify").(string)))
+
+	alsoNotifies := ""
+	for _, alsoNotify := range toStringArray(d.Get("also_notify").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpIPPort, alsoNotify); match == false {
+			return fmt.Errorf("SOLIDServer - Only IP:Port format is supported")
+		}
+		alsoNotifies += strings.Replace(alsoNotify, ":", " port ", 1) + ";"
+	}
+
+	if d.Get("notify").(string) == "" || strings.ToLower(d.Get("notify").(string)) == "no" {
+		if alsoNotifies != "" {
+			return fmt.Errorf("SOLIDServer - Error updating DNS zone: %s (Notify set to 'Inherited' or 'No' but also_notify list is not empty).", strings.ToLower(d.Get("name").(string)))
+		}
+		parameters.Add("dnszone_also_notify", alsoNotifies)
+	} else {
+		parameters.Add("dnszone_also_notify", alsoNotifies)
+	}
+
 	parameters.Add("dnszone_class_name", d.Get("class").(string))
 
 	// Building class_parameters
@@ -234,6 +303,9 @@ func resourcednszoneUpdate(d *schema.ResourceData, meta interface{}) error {
 		// Reporting a failure
 		if len(buf) > 0 {
 			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
+				if errParam, errParamExist := buf[0]["parameters"].(string); errParamExist {
+					return fmt.Errorf("SOLIDServer - Unable to update DNS zone: %s (%s - %s)", d.Get("name").(string), errMsg, errParam)
+				}
 				return fmt.Errorf("SOLIDServer - Unable to update DNS zone: %s (%s)", d.Get("name").(string), errMsg)
 			}
 		}
@@ -251,6 +323,10 @@ func resourcednszoneDelete(d *schema.ResourceData, meta interface{}) error {
 	// Building parameters
 	parameters := url.Values{}
 	parameters.Add("dnszone_id", d.Id())
+
+	if strings.Compare(d.Get("dnsview").(string), "#") != 0 {
+		parameters.Add("dnsview_name", strings.ToLower(d.Get("dnsview").(string)))
+	}
 
 	// Sending the deletion request
 	resp, body, err := s.Request("delete", "rest/dns_zone_delete", &parameters)
@@ -302,7 +378,7 @@ func resourcednszoneRead(d *schema.ResourceData, meta interface{}) error {
 		// Checking the answer
 		if resp.StatusCode == 200 && len(buf) > 0 {
 			d.Set("dnsserver", buf[0]["dns_name"].(string))
-			d.Set("view", buf[0]["dnsview_name"].(string))
+			d.Set("dnsview", buf[0]["dnsview_name"].(string))
 			d.Set("name", buf[0]["dnszone_name"].(string))
 			d.Set("type", buf[0]["dnszone_type"].(string))
 
@@ -311,6 +387,13 @@ func resourcednszoneRead(d *schema.ResourceData, meta interface{}) error {
 			} else {
 				d.Set("space", "")
 			}
+
+			d.Set("notify", strings.ToLower(buf[0]["dnszone_notify"].(string)))
+			if buf[0]["dnszone_also_notify"].(string) != "" {
+				d.Set("also_notify", toStringArrayInterface(strings.Split(strings.ReplaceAll(strings.TrimSuffix(buf[0]["dnszone_also_notify"].(string), ";"), " port ", ":"), ";")))
+			}
+
+			d.Set("class", buf[0]["dnszone_class_name"].(string))
 
 			// Updating local class_parameters
 			currentClassParameters := d.Get("class_parameters").(map[string]interface{})
@@ -376,7 +459,7 @@ func resourcednszoneImportState(d *schema.ResourceData, meta interface{}) ([]*sc
 		// Checking the answer
 		if resp.StatusCode == 200 && len(buf) > 0 {
 			d.Set("dnsserver", buf[0]["dns_name"].(string))
-			d.Set("view", buf[0]["dnsview_name"].(string))
+			d.Set("dnsview", buf[0]["dnsview_name"].(string))
 			d.Set("name", buf[0]["dnszone_name"].(string))
 			d.Set("type", buf[0]["dnszone_type"].(string))
 
@@ -385,6 +468,13 @@ func resourcednszoneImportState(d *schema.ResourceData, meta interface{}) ([]*sc
 			} else {
 				d.Set("space", "")
 			}
+
+			d.Set("notify", strings.ToLower(buf[0]["dnszone_notify"].(string)))
+			if buf[0]["dnszone_also_notify"].(string) != "" {
+				d.Set("also_notify", toStringArrayInterface(strings.Split(strings.ReplaceAll(strings.TrimSuffix(buf[0]["dnszone_also_notify"].(string), ";"), " port ", ":"), ";")))
+			}
+
+			d.Set("class", buf[0]["dnszone_class_name"].(string))
 
 			// Updating local class_parameters
 			currentClassParameters := d.Get("class_parameters").(map[string]interface{})

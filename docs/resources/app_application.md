@@ -11,7 +11,7 @@ resource "solidserver_app_application" "myFirstApplicaton" {
   fqdn         = "myfirstapp.priv"
   gslb_members = ["ns0.priv", "ns1.priv"]
   class        = "INTERNAL_APP"
-  class_parameters {
+  class_parameters = {
     owner = "MR. Smith"
     contact = "a.smith@mycompany.priv"
   }
@@ -25,3 +25,7 @@ resource "solidserver_app_application" "myFirstApplicaton" {
 * `gslb_members` - (Optional) The names of the GSLB servers applying the application traffic policy.
 * `class` - (Optional) An optional object class name allowing to store and display custom meta-data.
 * `class_parameters` - (Optional) An optional object class parameters allowing to store and display custom meta-data as key/value.
+
+## Attribute Reference
+
+* `id` - An internal id.

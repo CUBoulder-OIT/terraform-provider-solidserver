@@ -106,7 +106,9 @@ func resourceipsubnet() *schema.Resource {
 				Description: "The class parameters associated to the IP subnet.",
 				Optional:    true,
 				ForceNew:    false,
-				Default:     map[string]string{},
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 		},
 	}
@@ -522,6 +524,19 @@ func resourceipsubnetImportState(d *schema.ResourceData, meta interface{}) ([]*s
 			d.Set("space", buf[0]["site_name"].(string))
 			d.Set("block", buf[0]["parent_subnet_name"].(string))
 			d.Set("name", buf[0]["subnet_name"].(string))
+			d.Set("request_ip", buf[0]["start_hostaddr"].(string))
+
+			address := hexiptoip(buf[0]["start_ip_addr"].(string))
+			subnet_size, _ := strconv.Atoi(buf[0]["subnet_size"].(string))
+			prefix_length := sizetoprefixlength(subnet_size)
+			prefix := address + "/" + strconv.Itoa(prefix_length)
+
+			d.Set("address", address)
+			d.Set("prefix", prefix)
+			d.Set("prefix_size", prefix_length)
+			d.Set("netmask", prefixlengthtohexip(prefix_length))
+			d.Set("gateway_offset", 0)
+
 			d.Set("class", buf[0]["subnet_class_name"].(string))
 
 			// Setting local class_parameters

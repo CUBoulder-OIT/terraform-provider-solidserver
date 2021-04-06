@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/hashicorp/terraform/helper/validation"
 	"log"
 	"net/url"
 	"strings"
@@ -27,7 +28,7 @@ func resourcednsforwardzone() *schema.Resource {
 				Required:    true,
 				ForceNew:    true,
 			},
-			"view": {
+			"dnsview": {
 				Type:        schema.TypeString,
 				Description: "The DNS view name hosting the forward zone.",
 				Optional:    true,
@@ -42,10 +43,10 @@ func resourcednsforwardzone() *schema.Resource {
 			},
 			"forward": {
 				Type:         schema.TypeString,
-				Description:  "The forwarding mode of the forward zone (Supported: Only, First; Default: Only).",
-				ValidateFunc: resourcednsforwardzonevalidateforward,
+				Description:  "The forwarding mode of the forward zone (Supported: only, first; Default: only).",
+				ValidateFunc: validation.StringInSlice([]string{"first", "only"}, true),
 				Optional:     true,
-				Default:      "Only",
+				Default:      "only",
 			},
 			"forwarders": {
 				Type:        schema.TypeList,
@@ -67,20 +68,11 @@ func resourcednsforwardzone() *schema.Resource {
 				Description: "The class parameters associated to the forward zone.",
 				Optional:    true,
 				ForceNew:    false,
-				Default:     map[string]string{},
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 		},
-	}
-}
-
-func resourcednsforwardzonevalidateforward(v interface{}, _ string) ([]string, []error) {
-	switch strings.ToLower(v.(string)) {
-	case "only":
-		return nil, nil
-	case "first":
-		return nil, nil
-	default:
-		return nil, []error{fmt.Errorf("Zone forwarding mode.")}
 	}
 }
 
@@ -128,8 +120,8 @@ func resourcednsforwardzoneCreate(d *schema.ResourceData, meta interface{}) erro
 	parameters := url.Values{}
 	parameters.Add("add_flag", "new_only")
 	parameters.Add("dns_name", d.Get("dnsserver").(string))
-	if strings.Compare(d.Get("view").(string), "#") != 0 {
-		parameters.Add("dnsview_name", d.Get("view").(string))
+	if strings.Compare(d.Get("dnsview").(string), "#") != 0 {
+		parameters.Add("dnsview_name", d.Get("dnsview").(string))
 	}
 	parameters.Add("dnszone_name", d.Get("name").(string))
 	parameters.Add("dnszone_type", "forward")
@@ -289,7 +281,7 @@ func resourcednsforwardzoneRead(d *schema.ResourceData, meta interface{}) error 
 		// Checking the answer
 		if resp.StatusCode == 200 && len(buf) > 0 {
 			d.Set("dnsserver", buf[0]["dns_name"].(string))
-			d.Set("view", buf[0]["dnsview_name"].(string))
+			d.Set("dnsview", buf[0]["dnsview_name"].(string))
 			d.Set("name", buf[0]["dnszone_name"].(string))
 
 			// Updating forward mode
@@ -303,6 +295,8 @@ func resourcednsforwardzoneRead(d *schema.ResourceData, meta interface{}) error 
 			if buf[0]["dnszone_forwarders"].(string) != "" {
 				d.Set("forwarders", toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dnszone_forwarders"].(string), ";"), ";")))
 			}
+
+			d.Set("class", buf[0]["dnszone_class_name"].(string))
 
 			// Updating local class_parameters
 			currentClassParameters := d.Get("class_parameters").(map[string]interface{})
@@ -363,7 +357,7 @@ func resourcednsforwardzoneImportState(d *schema.ResourceData, meta interface{})
 		// Checking the answer
 		if resp.StatusCode == 200 && len(buf) > 0 {
 			d.Set("dnsserver", buf[0]["dns_name"].(string))
-			d.Set("view", buf[0]["dnsview_name"].(string))
+			d.Set("dnsview", buf[0]["dnsview_name"].(string))
 			d.Set("name", buf[0]["dnszone_name"].(string))
 			d.Set("type", buf[0]["dnszone_type"].(string))
 
@@ -378,6 +372,8 @@ func resourcednsforwardzoneImportState(d *schema.ResourceData, meta interface{})
 			if buf[0]["dnszone_forwarders"].(string) != "" {
 				d.Set("forwarders", toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dnszone_forwarders"].(string), ";"), ";")))
 			}
+
+			d.Set("class", buf[0]["dnszone_class_name"].(string))
 
 			// Updating local class_parameters
 			currentClassParameters := d.Get("class_parameters").(map[string]interface{})

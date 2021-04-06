@@ -38,8 +38,10 @@ func resourceuser() *schema.Resource {
 				Description: "The group id set for this user",
 				Required:    true,
 				ForceNew:    false,
-				Elem:        &schema.Schema{Type: schema.TypeString},
-				Set:         schema.HashString,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+				Set: schema.HashString,
 			},
 			"description": {
 				Type:        schema.TypeString,
@@ -74,68 +76,49 @@ func resourceuser() *schema.Resource {
 				Description: "The class parameters associated to the user.",
 				Optional:    true,
 				ForceNew:    false,
-				Default:     map[string]string{},
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 		},
 	}
 }
 
-func _addUserToGroupId(d *schema.ResourceData,
-	meta interface{},
-	group string) error {
+func _addUserToGroup(d *schema.ResourceData, meta interface{}, group string) error {
 	s := meta.(*SOLIDserver)
 
 	parameters := url.Values{}
 	parameters.Add("add_flag", "new_only")
-	parameters.Add("grp_id", group)
+	parameters.Add("grp_name", group)
 	// parameters.Add("usr_login", d.Get("login").(string))
 	parameters.Add("usr_id", d.Id())
 
-	log.Printf("[DEBUG] - add user in group %s\n", parameters)
+	log.Printf("[DEBUG] SOLIDServer - Adding user into group %s\n", parameters)
 
 	// Sending creation request of the user
-	resp, body, err := s.Request("post",
-		"rest/group_user_add",
-		&parameters)
-
+	resp, body, err := s.Request("post", "rest/group_user_add", &parameters)
 	if err == nil {
 		var buf [](map[string]interface{})
 		json.Unmarshal([]byte(body), &buf)
 
 		// Checking the answer
-		if resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 400 {
-			if len(buf) > 0 {
-				if buf[0]["errno"].(string) == "0" {
-					log.Printf("[DEBUG] - User affected to group %s\n", group)
-					return nil
-				} else {
-					return fmt.Errorf("SOLIDServer - error in affecting user (%s) to group (%s)\n",
-						d.Get("login").(string),
-						d.Get("group").(string))
-				}
-			} else {
-				if resp.StatusCode == 400 {
-					// need to FIX the #0048042 (04/04/19), return 400 as status code
-					log.Printf("[DEBUG] - waiting for patch of #0048042, validate even with 400\n")
-					log.Printf("[DEBUG] - User affected to group %s\n", group)
-					return nil
-				}
-			}
+		if resp.StatusCode == 204 || (resp.StatusCode == 400 && len(buf) == 0) {
+			log.Printf("[DEBUG] SOLIDServer - User added to group %s\n", group)
+			return nil
 		}
 	}
 
-	return fmt.Errorf("SOLIDServer - Unable to affect user %s to group %s\n",
-		d.Get("login").(string), group)
+	return fmt.Errorf("SOLIDServer - Unable to add user %s to group %s\n", d.Get("login").(string), group)
 }
 
-func _delUserFromGroupId(d *schema.ResourceData,
-	meta interface{},
-	group string) error {
+func _delUserFromGroup(d *schema.ResourceData, meta interface{}, group string) error {
 	s := meta.(*SOLIDserver)
 
 	parameters := url.Values{}
-	parameters.Add("grp_id", group)
+	parameters.Add("grp_name", group)
 	parameters.Add("usr_login", d.Get("login").(string))
+
+	log.Printf("[DEBUG] SOLIDServer - Removing user from group %s\n", parameters)
 
 	// Sending creation request of the user
 	resp, body, err := s.Request("delete", "rest/group_user_delete", &parameters)
@@ -143,21 +126,16 @@ func _delUserFromGroupId(d *schema.ResourceData,
 		var buf [](map[string]interface{})
 		json.Unmarshal([]byte(body), &buf)
 
-		if resp.StatusCode == 204 && len(buf) == 0 {
-			log.Printf("[DEBUG] - User removed from group %s\n", group)
+		if resp.StatusCode == 204 || (resp.StatusCode == 400 && len(buf) == 0) {
+			log.Printf("[DEBUG] SOLIDServer - User removed from group %s\n", group)
 			return nil
 		}
-
-		log.Printf("[DEBUG] - remove error %d %s\n", resp.StatusCode, buf)
 	}
 
-	return fmt.Errorf("SOLIDServer - error in removing user (%s) from group (id=%s)\n",
-		d.Get("login").(string),
-		group)
+	return fmt.Errorf("SOLIDServer - Unable to remove user (%s) from group (%s)\n", d.Get("login").(string), group)
 }
 
-func _readUserId(d *schema.ResourceData,
-	meta interface{}) (map[string]interface{}, error) {
+func _readUserId(d *schema.ResourceData, meta interface{}) (map[string]interface{}, error) {
 	s := meta.(*SOLIDserver)
 
 	// Building parameters
@@ -192,8 +170,7 @@ func _readUserId(d *schema.ResourceData,
 	return nil, err
 }
 
-func resourceuserExists(d *schema.ResourceData,
-	meta interface{}) (bool, error) {
+func resourceuserExists(d *schema.ResourceData, meta interface{}) (bool, error) {
 	_, err := _readUserId(d, meta)
 
 	if err == nil {
@@ -207,10 +184,7 @@ func resourceuserExists(d *schema.ResourceData,
 	return false, err
 }
 
-func resourceuserCreate(d *schema.ResourceData,
-	meta interface{}) error {
-	log.Printf("[DEBUG] - start created user\n")
-
+func resourceuserCreate(d *schema.ResourceData, meta interface{}) error {
 	s := meta.(*SOLIDserver)
 
 	// Building parameters
@@ -245,25 +219,21 @@ func resourceuserCreate(d *schema.ResourceData,
 		// Checking the answer
 		if (resp.StatusCode == 200 || resp.StatusCode == 201) && len(buf) > 0 {
 			if oid, oidExist := buf[0]["ret_oid"].(string); oidExist {
-				log.Printf("[DEBUG] - Created user (oid): %s\n", oid)
+				log.Printf("[DEBUG] SOLIDServer - Created user (oid): %s\n", oid)
 				d.SetId(oid)
 			}
+		} else {
+			return fmt.Errorf("SOLIDServer - Unable to create user: %s\n", d.Get("login").(string))
 		}
 	} else {
 		return err
 	}
 
-	// === apply group to this user
-	// Building parameters
-	log.Printf("[DEBUG] - Affect the user to his groups\n")
-
+	// Adding user to its groups
 	groups := d.Get("groups").(*schema.Set)
-	if groups.Len() == 0 {
-		return fmt.Errorf("SOLIDServer - user groups set is empty\n")
-	}
 
 	for _, elem := range groups.List() {
-		if _addUserToGroupId(d, meta, elem.(string)) != nil {
+		if _addUserToGroup(d, meta, elem.(string)) != nil {
 			return fmt.Errorf("SOLIDServer - Unable to affect user %s to his group\n", d.Get("login").(string))
 		}
 	}
@@ -271,8 +241,7 @@ func resourceuserCreate(d *schema.ResourceData,
 	return nil
 }
 
-func resourceuserUpdate(d *schema.ResourceData,
-	meta interface{}) error {
+func resourceuserUpdate(d *schema.ResourceData, meta interface{}) error {
 	s := meta.(*SOLIDserver)
 
 	// Building parameters
@@ -311,7 +280,7 @@ func resourceuserUpdate(d *schema.ResourceData,
 			// Checking the answer
 			if (resp.StatusCode == 200 || resp.StatusCode == 201) && len(buf) > 0 {
 				if oid, oidExist := buf[0]["ret_oid"].(string); oidExist {
-					log.Printf("[DEBUG] - Updated user (oid): %s\n", oid)
+					log.Printf("[DEBUG] SOLIDServer - Updated user (oid): %s\n", oid)
 					d.SetId(oid)
 				}
 			} else {
@@ -339,7 +308,7 @@ func resourceuserUpdate(d *schema.ResourceData,
 
 		if !bFound {
 			// new group is not on the old set, we affect the user to it
-			if _addUserToGroupId(d, meta, elem.(string)) != nil {
+			if _addUserToGroup(d, meta, elem.(string)) != nil {
 				return fmt.Errorf("SOLIDServer - Unable to affect user %s to group %s\n",
 					d.Get("login").(string),
 					elem.(string))
@@ -359,7 +328,7 @@ func resourceuserUpdate(d *schema.ResourceData,
 
 		if !bFound {
 			// old group is not on the new set, suppress affectation
-			if _delUserFromGroupId(d, meta, elem.(string)) != nil {
+			if _delUserFromGroup(d, meta, elem.(string)) != nil {
 				return fmt.Errorf("SOLIDServer - Unable to delete user %s from group %s\n",
 					d.Get("login").(string),
 					elem.(string))
@@ -370,8 +339,7 @@ func resourceuserUpdate(d *schema.ResourceData,
 	return nil
 }
 
-func resourceuserDelete(d *schema.ResourceData,
-	meta interface{}) error {
+func resourceuserDelete(d *schema.ResourceData, meta interface{}) error {
 	s := meta.(*SOLIDserver)
 
 	// Building parameters
@@ -407,8 +375,7 @@ func resourceuserDelete(d *schema.ResourceData,
 	return err
 }
 
-func resourceuserRead(d *schema.ResourceData,
-	meta interface{}) error {
+func resourceuserRead(d *schema.ResourceData, meta interface{}) error {
 	s := meta.(*SOLIDserver)
 
 	buf, err := _readUserId(d, meta)
@@ -454,28 +421,29 @@ func resourceuserRead(d *schema.ResourceData,
 	json.Unmarshal([]byte(body), &bufg)
 
 	// Checking the answer
-	if resp.StatusCode == 200 {
+	if resp.StatusCode == 200 || resp.StatusCode == 204 {
 		if len(bufg) > 0 {
 			var groups []string
 
 			for _, elem := range bufg {
-				log.Printf("[DEBUG] resourceuserRead grp = %s\n", elem["grp_id"])
-				groups = append(groups, elem["grp_id"].(string))
+				//log.Printf("[DEBUG] resourceuserRead grp = %s\n", elem["grp_name"])
+				groups = append(groups, elem["grp_name"].(string))
 			}
-			log.Printf("[DEBUG] resourceuserRead set grp = %s\n", groups)
+			//log.Printf("[DEBUG] resourceuserRead set grp = %s\n", groups)
 
 			d.Set("groups", groups)
 
 			return nil
 		}
+
+		return nil
 	}
 
 	return fmt.Errorf("SOLIDServer - Unable to find group for user: %s\n",
 		d.Get("login").(string))
 }
 
-func resourceuserImportState(d *schema.ResourceData,
-	meta interface{}) ([]*schema.ResourceData, error) {
+func resourceuserImportState(d *schema.ResourceData, meta interface{}) ([]*schema.ResourceData, error) {
 	s := meta.(*SOLIDserver)
 
 	// Building parameters
@@ -517,10 +485,10 @@ func resourceuserImportState(d *schema.ResourceData,
 
 		if len(buf) > 0 {
 			if errMsg, errExist := buf[0]["errmsg"].(string); errExist {
-				log.Printf("[DEBUG] - Unable to import user (oid): %s (%s)\n", d.Id(), errMsg)
+				log.Printf("[DEBUG] SOLIDServer - Unable to import user (oid): %s (%s)\n", d.Id(), errMsg)
 			}
 		} else {
-			log.Printf("[DEBUG] - Unable to find and import user (oid): %s\n", d.Id())
+			log.Printf("[DEBUG] SOLIDServer - Unable to find and import user (oid): %s\n", d.Id())
 		}
 
 		// Reporting a failure

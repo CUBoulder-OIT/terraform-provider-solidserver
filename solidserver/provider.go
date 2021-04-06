@@ -2,7 +2,9 @@ package solidserver
 
 import (
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/hashicorp/terraform/helper/validation"
 	"github.com/hashicorp/terraform/terraform"
+	"regexp"
 )
 
 func Provider() terraform.ResourceProvider {
@@ -40,6 +42,14 @@ func Provider() terraform.ResourceProvider {
 				DefaultFunc: schema.EnvDefaultFunc("SOLIDServer_ADDITIONALTRUSTCERTSFILE", nil),
 				Description: "PEM formatted file with additional certificates to trust for TLS connection",
 			},
+			"solidserverversion": {
+				Type:         schema.TypeString,
+				Required:     false,
+				Optional:     true,
+				DefaultFunc:  schema.EnvDefaultFunc("SOLIDServer_VERSION", ""),
+				ValidateFunc: validation.StringMatch(regexp.MustCompile(`^([0-9]\.[0-9]\.[0-9]\.([pP][0-9]+[a-z]?)?)?$`), "Invalid Version Number"),
+				Description:  "SOLIDServer Version in case API user does not have admin permissions",
+			},
 		},
 
 		DataSourcesMap: map[string]*schema.Resource{
@@ -51,6 +61,8 @@ func Provider() terraform.ResourceProvider {
 			"solidserver_ip6_ptr":    dataSourceip6ptr(),
 			"solidserver_dns_smart":  dataSourcednssmart(),
 			"solidserver_dns_server": dataSourcednsserver(),
+			"solidserver_dns_view":   dataSourcednsview(),
+			"solidserver_dns_zone":   dataSourcednszone(),
 			"solidserver_usergroup":  dataSourceusergroup(),
 			"solidserver_cdb":        dataSourcecdb(),
 			"solidserver_cdb_data":   dataSourcecdbdata(),
@@ -73,6 +85,7 @@ func Provider() terraform.ResourceProvider {
 			"solidserver_vlan":             resourcevlan(),
 			"solidserver_dns_smart":        resourcednssmart(),
 			"solidserver_dns_server":       resourcednsserver(),
+			"solidserver_dns_view":         resourcednsview(),
 			"solidserver_dns_zone":         resourcednszone(),
 			"solidserver_dns_forward_zone": resourcednsforwardzone(),
 			"solidserver_dns_rr":           resourcednsrr(),
@@ -96,6 +109,7 @@ func ProviderConfigure(d *schema.ResourceData) (interface{}, error) {
 		d.Get("password").(string),
 		d.Get("sslverify").(bool),
 		d.Get("additional_trust_certs_file").(string),
+		d.Get("solidserverversion").(string),
 	)
 
 	return s, err

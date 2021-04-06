@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform/helper/validation"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -26,10 +27,11 @@ func resourcednsserver() *schema.Resource {
 
 		Schema: map[string]*schema.Schema{
 			"name": {
-				Type:        schema.TypeString,
-				Description: "The name of the DNS server to create.",
-				Required:    true,
-				ForceNew:    true,
+				Type:             schema.TypeString,
+				Description:      "The name of the DNS server to create.",
+				DiffSuppressFunc: resourcediffsuppresscase,
+				Required:         true,
+				ForceNew:         true,
 			},
 			"address": {
 				Type:         schema.TypeString,
@@ -69,11 +71,60 @@ func resourcednsserver() *schema.Resource {
 				Description: "The type of DNS server (Supported: ipm (SOLIDserver or Linux Package); Default: ipm).",
 				Computed:    true,
 			},
+
 			"comment": {
 				Type:        schema.TypeString,
 				Description: "Custom information about the DNS server.",
 				Optional:    true,
 				Default:     "",
+			},
+			"recursion": {
+				Type:        schema.TypeBool,
+				Description: "The recursion mode of the DNS server (Default: true).",
+				Optional:    true,
+				Default:     true,
+			},
+			"forward": {
+				Type:         schema.TypeString,
+				Description:  "The forwarding mode of the DNS server (Supported: none, first, only; Default: none).",
+				ValidateFunc: validation.StringInSlice([]string{"none", "first", "only"}, false),
+				Optional:     true,
+				Default:      "none",
+			},
+			"forwarders": {
+				Type:        schema.TypeList,
+				Description: "The list of forwarders' IP address to be used by the DNS server.",
+				Optional:    true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"allow_transfer": {
+				Type:        schema.TypeList,
+				Description: "A list of network prefixes allowed to query the DNS server for zone transfert (named ACL(s) are not supported using this provider).  Use '!' to negate an entry.",
+				Optional:    true,
+				ForceNew:    false,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"allow_query": {
+				Type:        schema.TypeList,
+				Description: "A list of network prefixes allowed to query the DNS server (named ACL(s) are not supported using this provider).  Use '!' to negate an entry.",
+				Optional:    true,
+				ForceNew:    false,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"allow_recursion": {
+				Type:        schema.TypeList,
+				Description: "A list of network prefixes allowed to query the DNS server for recursion (named ACL(s) are not supported using this provider).  Use '!' to negate an entry.",
+				Optional:    true,
+				ForceNew:    false,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 			"smart": {
 				Type:        schema.TypeString,
@@ -102,7 +153,9 @@ func resourcednsserver() *schema.Resource {
 				Description: "The class parameters associated to the DNS server.",
 				Optional:    true,
 				ForceNew:    false,
-				Default:     map[string]string{},
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 		},
 	}
@@ -162,6 +215,61 @@ func resourcednsserverCreate(d *schema.ResourceData, meta interface{}) error {
 	parameters.Add("hostaddr", d.Get("address").(string))
 	parameters.Add("dns_comment", d.Get("comment").(string))
 
+	// Configure recursion
+	if d.Get("recursion").(bool) {
+		parameters.Add("dns_recursion", "yes")
+	} else {
+		parameters.Add("dns_recursion", "no")
+	}
+
+	// Building forward mode and forwarder list
+	fwdList := ""
+	for _, fwd := range toStringArray(d.Get("forwarders").([]interface{})) {
+		fwdList += fwd + ";"
+	}
+
+	if d.Get("forward").(string) == "none" {
+		parameters.Add("dns_forward", "")
+		if fwdList != "" {
+			return fmt.Errorf("SOLIDServer - Error creating DNS server: %s (Forward mode set to 'none' but forwarders list is not empty).", strings.ToLower(d.Get("name").(string)))
+		}
+	} else {
+		parameters.Add("dns_forward", strings.ToLower(d.Get("forward").(string)))
+	}
+
+	parameters.Add("dns_forwarders", fwdList)
+
+	// Only look for network prefixes, acl(s) names will be ignored during the sync process with SOLIDserver
+	// Building allow_transfer ACL
+	allowTransfers := ""
+	for _, allowTransfer := range toStringArray(d.Get("allow_transfer").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpNetworkAcl, allowTransfer); match == false {
+			return fmt.Errorf("SOLIDServer - Only network prefixes are supported for DNS server's allow_transfer parameter")
+		}
+		allowTransfers += allowTransfer + ";"
+	}
+	parameters.Add("dns_allow_transfer", allowTransfers)
+
+	// Building allow_query ACL
+	allowQueries := ""
+	for _, allowQuery := range toStringArray(d.Get("allow_query").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpNetworkAcl, allowQuery); match == false {
+			return fmt.Errorf("SOLIDServer - Only network prefixes are supported for DNS server's allow_query parameter")
+		}
+		allowQueries += allowQuery + ";"
+	}
+	parameters.Add("dns_allow_query", allowQueries)
+
+	// Building allow_recursion ACL
+	allowRecursions := ""
+	for _, allowRecursion := range toStringArray(d.Get("allow_recursion").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpNetworkAcl, allowRecursion); match == false {
+			return fmt.Errorf("SOLIDServer - Only network prefixes are supported for DNS server's allow_recursion parameter")
+		}
+		allowRecursions += allowRecursion + ";"
+	}
+	parameters.Add("dns_allow_recursion", allowRecursions)
+
 	parameters.Add("dns_class_name", d.Get("class").(string))
 	parameters.Add("dns_class_parameters", urlfromclassparams(d.Get("class_parameters")).Encode())
 
@@ -187,6 +295,14 @@ func resourcednsserverCreate(d *schema.ResourceData, meta interface{}) error {
 				if strings.ToLower(d.Get("smart").(string)) != "" {
 					//FIXME - Handle Errors
 					dnsaddtosmart(strings.ToLower(d.Get("smart").(string)), strings.ToLower(d.Get("name").(string)), strings.ToLower(d.Get("smart_role").(string)), meta)
+				}
+
+				// Wait as much as possible for for the DNS server to be ready
+				for attempts := 0; attempts < 12; attempts++ {
+					if dnsserverstatus(d.Id(), meta) == "Y" {
+						break
+					}
+					time.Sleep(time.Duration(8 * time.Second))
 				}
 
 				return nil
@@ -220,6 +336,61 @@ func resourcednsserverUpdate(d *schema.ResourceData, meta interface{}) error {
 
 	parameters.Add("hostaddr", d.Get("address").(string))
 	parameters.Add("dns_comment", d.Get("comment").(string))
+
+	// Configure recursion
+	if d.Get("recursion").(bool) {
+		parameters.Add("dns_recursion", "yes")
+	} else {
+		parameters.Add("dns_recursion", "no")
+	}
+
+	// Building forward mode and forwarder list
+	fwdList := ""
+	for _, fwd := range toStringArray(d.Get("forwarders").([]interface{})) {
+		fwdList += fwd + ";"
+	}
+
+	if d.Get("forward").(string) == "none" {
+		parameters.Add("dns_forward", "")
+		if fwdList != "" {
+			return fmt.Errorf("SOLIDServer - Error creating DNS server: %s (Forward mode set to 'none' but forwarders list is not empty).", strings.ToLower(d.Get("name").(string)))
+		}
+	} else {
+		parameters.Add("dns_forward", strings.ToLower(d.Get("forward").(string)))
+	}
+
+	parameters.Add("dns_forwarders", fwdList)
+
+	// Only look for network prefixes, acl(s) names will be ignored during the sync process with SOLIDserver
+	// Building allow_transfer ACL
+	allowTransfers := ""
+	for _, allowTransfer := range toStringArray(d.Get("allow_transfer").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpNetworkAcl, allowTransfer); match == false {
+			return fmt.Errorf("SOLIDServer - Only network prefixes are supported for DNS server's allow_transfer parameter")
+		}
+		allowTransfers += allowTransfer + ";"
+	}
+	parameters.Add("dns_allow_transfer", allowTransfers)
+
+	// Building allow_query ACL
+	allowQueries := ""
+	for _, allowQuery := range toStringArray(d.Get("allow_query").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpNetworkAcl, allowQuery); match == false {
+			return fmt.Errorf("SOLIDServer - Only network prefixes are supported for DNS server's allow_query parameter")
+		}
+		allowQueries += allowQuery + ";"
+	}
+	parameters.Add("dns_allow_query", allowQueries)
+
+	// Building allow_recursion ACL
+	allowRecursions := ""
+	for _, allowRecursion := range toStringArray(d.Get("allow_recursion").([]interface{})) {
+		if match, _ := regexp.MatchString(regexpNetworkAcl, allowRecursion); match == false {
+			return fmt.Errorf("SOLIDServer - Only network prefixes are supported for DNS server's allow_recursion parameter")
+		}
+		allowRecursions += allowRecursion + ";"
+	}
+	parameters.Add("dns_allow_recursion", allowRecursions)
 
 	parameters.Add("dns_class_name", d.Get("class").(string))
 	parameters.Add("dns_class_parameters", urlfromclassparams(d.Get("class_parameters")).Encode())
@@ -265,6 +436,20 @@ func resourcednsserverDelete(d *schema.ResourceData, meta interface{}) error {
 		if strings.ToLower(d.Get("smart").(string)) != "" {
 			//FIXME - Handle Errors
 			dnsdeletefromsmart(strings.ToLower(d.Get("smart").(string)), strings.ToLower(d.Get("name").(string)), meta)
+		}
+
+		// Wait for all views and zones to be deleted, fail after 3 attempts
+		attempts := 0
+		for attempts = 0; attempts < 3; attempts++ {
+			if dnsserverpendingdeletions(d.Id(), meta) == 0 {
+				break
+			}
+			time.Sleep(time.Duration(16 * time.Second))
+		}
+
+		// Reporting a failure
+		if attempts >= 3 {
+			return fmt.Errorf("SOLIDServer - Unable to delete DNS server: Too many unsuccessful deletion attempts (Pending operations)")
 		}
 
 		// Sending the deletion request
@@ -323,8 +508,61 @@ func resourcednsserverRead(d *schema.ResourceData, meta interface{}) error {
 		if resp.StatusCode == 200 && len(buf) > 0 {
 			d.Set("name", strings.ToLower(buf[0]["dns_name"].(string)))
 			d.Set("address", hexiptoip(buf[0]["ip_addr"].(string)))
-			d.Set("comment", buf[0]["dns_comment"].(string))
 			d.Set("type", buf[0]["dns_type"].(string))
+			d.Set("comment", buf[0]["dns_comment"].(string))
+
+			// Updating recursion mode
+			if buf[0]["dns_recursion"].(string) == "yes" {
+				d.Set("recursion", true)
+			} else {
+				d.Set("recursion", false)
+			}
+
+			// Updating forward mode
+			if buf[0]["dns_forward"].(string) == "" {
+				d.Set("forward", "none")
+			} else {
+				d.Set("forward", strings.ToLower(buf[0]["dns_forward"].(string)))
+			}
+
+			// Updating forwarder information
+			if buf[0]["dns_forwarders"].(string) != "" {
+				d.Set("forwarders", toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_forwarders"].(string), ";"), ";")))
+			}
+
+			// Only look for network prefixes, acl(s) names will be ignored during the sync process with SOLIDserver
+			// Building allow_transfer ACL
+			if buf[0]["dns_allow_transfer"].(string) != "" {
+				allowTransfers := []string{}
+				for _, allowTransfer := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_transfer"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowTransfer.(string)); match == true {
+						allowTransfers = append(allowTransfers, allowTransfer.(string))
+					}
+				}
+				d.Set("allow_transfer", allowTransfers)
+			}
+
+			// Building allow_query ACL
+			if buf[0]["dns_allow_query"].(string) != "" {
+				allowQueries := []string{}
+				for _, allowQuery := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_query"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowQuery.(string)); match == true {
+						allowQueries = append(allowQueries, allowQuery.(string))
+					}
+				}
+				d.Set("allow_query", allowQueries)
+			}
+
+			// Building allow_recursion ACL
+			if buf[0]["dns_allow_recursion"].(string) != "" {
+				allowRecursions := []string{}
+				for _, allowRecursion := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_recursion"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowRecursion.(string)); match == true {
+						allowRecursions = append(allowRecursions, allowRecursion.(string))
+					}
+				}
+				d.Set("allow_recursion", allowRecursions)
+			}
 
 			d.Set("class", buf[0]["dns_class_name"].(string))
 
@@ -384,8 +622,61 @@ func resourcednsserverImportState(d *schema.ResourceData, meta interface{}) ([]*
 		if resp.StatusCode == 200 && len(buf) > 0 {
 			d.Set("name", strings.ToLower(buf[0]["dns_name"].(string)))
 			d.Set("address", hexiptoip(buf[0]["ip_addr"].(string)))
-			d.Set("comment", buf[0]["dns_comment"].(string))
 			d.Set("type", buf[0]["dns_type"].(string))
+			d.Set("comment", buf[0]["dns_comment"].(string))
+
+			// Updating recursion mode
+			if buf[0]["dns_recursion"].(string) == "yes" {
+				d.Set("recursion", true)
+			} else {
+				d.Set("recursion", false)
+			}
+
+			// Updating forward mode
+			if buf[0]["dns_forward"].(string) == "" {
+				d.Set("forward", "none")
+			} else {
+				d.Set("forward", strings.ToLower(buf[0]["dns_forward"].(string)))
+			}
+
+			// Updating forwarder information
+			if buf[0]["dns_forwarders"].(string) != "" {
+				d.Set("forwarders", toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_forwarders"].(string), ";"), ";")))
+			}
+
+			// Only look for network prefixes, acl(s) names will be ignored during the sync process with SOLIDserver
+			// Building allow_transfer ACL
+			if buf[0]["dns_allow_transfer"].(string) != "" {
+				allowTransfers := []string{}
+				for _, allowTransfer := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_transfer"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowTransfer.(string)); match == true {
+						allowTransfers = append(allowTransfers, allowTransfer.(string))
+					}
+				}
+				d.Set("allow_transfer", allowTransfers)
+			}
+
+			// Building allow_query ACL
+			if buf[0]["dns_allow_query"].(string) != "" {
+				allowQueries := []string{}
+				for _, allowQuery := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_query"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowQuery.(string)); match == true {
+						allowQueries = append(allowQueries, allowQuery.(string))
+					}
+				}
+				d.Set("allow_query", allowQueries)
+			}
+
+			// Building allow_recursion ACL
+			if buf[0]["dns_allow_recursion"].(string) != "" {
+				allowRecursions := []string{}
+				for _, allowRecursion := range toStringArrayInterface(strings.Split(strings.TrimSuffix(buf[0]["dns_allow_recursion"].(string), ";"), ";")) {
+					if match, _ := regexp.MatchString(regexpNetworkAcl, allowRecursion.(string)); match == true {
+						allowRecursions = append(allowRecursions, allowRecursion.(string))
+					}
+				}
+				d.Set("allow_recursion", allowRecursions)
+			}
 
 			d.Set("class", buf[0]["dns_class_name"].(string))
 
